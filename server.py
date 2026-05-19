@@ -1,0 +1,244 @@
+#!/usr/bin/env python3
+"""K8s Log Viewer – FastAPI backend.
+
+Exposes:
+  GET  /api/contexts           – list kubeconfig contexts
+  GET  /api/namespaces         – list namespaces in a context
+  GET  /api/pods               – list pods in a namespace
+  GET  /api/logs/download      – download pod logs as a file
+  WS   /ws/logs                – stream pod logs in real-time
+  GET  /                       – serve static frontend
+"""
+
+import asyncio
+import logging
+import os
+import sys
+import threading
+from typing import Optional
+
+import uvicorn
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
+from fastapi.staticfiles import StaticFiles
+from kubernetes import client, config, watch
+from kubernetes.client.rest import ApiException
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
+logger = logging.getLogger("k8s-log-viewer")
+
+KUBECONFIG_PATH = os.environ.get("KUBECONFIG_PATH", "./kubeconfig.yaml")
+HOST = os.environ.get("HOST", "0.0.0.0")
+PORT = int(sys.argv[1]) if len(sys.argv) > 1 else int(os.environ.get("PORT", "8080"))
+
+
+# ── Kubernetes helpers ────────────────────────────────────────────────────────
+
+def make_v1(context: str) -> client.CoreV1Api:
+    """Create a CoreV1Api client bound to *context*."""
+    cfg = client.Configuration()
+    try:
+        config.load_kube_config(
+            config_file=KUBECONFIG_PATH,
+            context=context,
+            client_configuration=cfg,
+        )
+    except Exception as exc:
+        raise HTTPException(500, f"kubeconfig error: {exc}") from exc
+    return client.CoreV1Api(client.ApiClient(configuration=cfg))
+
+
+# ── FastAPI app ───────────────────────────────────────────────────────────────
+
+app = FastAPI(title="K8s Log Viewer", docs_url=None, redoc_url=None)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# ── REST endpoints ────────────────────────────────────────────────────────────
+
+@app.get("/api/health")
+def health():
+    return {"ok": True}
+
+
+@app.get("/api/contexts")
+def list_contexts():
+    try:
+        ctxs, active = config.list_kube_config_contexts(config_file=KUBECONFIG_PATH)
+        return {
+            "contexts": [c["name"] for c in (ctxs or [])],
+            "active": active["name"] if active else None,
+        }
+    except Exception as exc:
+        raise HTTPException(500, str(exc)) from exc
+
+
+@app.get("/api/namespaces")
+def list_namespaces(context: str = Query(...)):
+    v1 = make_v1(context)
+    try:
+        items = v1.list_namespace().items
+        return {"namespaces": sorted(n.metadata.name for n in items)}
+    except ApiException as exc:
+        raise HTTPException(exc.status, exc.reason) from exc
+
+
+@app.get("/api/pods")
+def list_pods(context: str = Query(...), namespace: str = Query(...)):
+    v1 = make_v1(context)
+    try:
+        raw = v1.list_namespaced_pod(namespace=namespace).items
+    except ApiException as exc:
+        raise HTTPException(exc.status, exc.reason) from exc
+
+    pods = []
+    for p in raw:
+        cs = p.status.container_statuses or []
+        ready = sum(1 for c in cs if c.ready)
+        total = len(p.spec.containers)
+        pods.append({
+            "name": p.metadata.name,
+            "status": p.status.phase or "Unknown",
+            "ready": f"{ready}/{total}",
+            "restarts": sum(c.restart_count for c in cs),
+            "containers": [c.name for c in p.spec.containers],
+            "init_containers": [c.name for c in (p.spec.init_containers or [])],
+        })
+    return {"pods": sorted(pods, key=lambda x: x["name"])}
+
+
+@app.get("/api/logs/download")
+def download_logs(
+    context: str = Query(...),
+    namespace: str = Query(...),
+    pod: str = Query(...),
+    container: Optional[str] = Query(None),
+    tail_lines: Optional[int] = Query(5000),
+    previous: bool = Query(False),
+):
+    v1 = make_v1(context)
+    kw: dict = {"name": pod, "namespace": namespace, "previous": previous}
+    if container:
+        kw["container"] = container
+    if tail_lines:
+        kw["tail_lines"] = tail_lines
+    try:
+        logs = v1.read_namespaced_pod_log(**kw) or ""
+    except ApiException as exc:
+        raise HTTPException(exc.status, exc.reason) from exc
+
+    fname = f"{pod}_{container or 'default'}.log"
+    return Response(
+        content=logs,
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
+# ── WebSocket log streaming ───────────────────────────────────────────────────
+
+@app.websocket("/ws/logs")
+async def ws_logs(
+    websocket: WebSocket,
+    context: str,
+    namespace: str,
+    pod: str,
+    container: Optional[str] = None,
+    tail_lines: int = 100,
+    previous: bool = False,
+):
+    """Stream pod logs as JSON messages:
+      {"t": "log",  "line": "..."}
+      {"t": "err",  "msg":  "..."}
+      {"t": "done"}
+      {"t": "ping"}
+    """
+    await websocket.accept()
+    logger.info("WS open  %s/%s/%s (ctr=%s)", context, namespace, pod, container)
+
+    loop = asyncio.get_event_loop()
+    q: asyncio.Queue = asyncio.Queue(maxsize=20_000)
+    stop = threading.Event()
+
+    def _worker():
+        v1 = make_v1(context)
+        w = watch.Watch()
+        kw: dict = {
+            "name": pod,
+            "namespace": namespace,
+            "follow": True,
+            "tail_lines": tail_lines,
+            "previous": previous,
+        }
+        if container:
+            kw["container"] = container
+        try:
+            for line in w.stream(v1.read_namespaced_pod_log, **kw):
+                if stop.is_set():
+                    w.stop()
+                    return
+                asyncio.run_coroutine_threadsafe(
+                    q.put({"t": "log", "line": line}), loop
+                ).result(timeout=10)
+        except ApiException as exc:
+            asyncio.run_coroutine_threadsafe(
+                q.put({"t": "err", "msg": f"[K8s {exc.status}] {exc.reason}"}), loop
+            )
+        except Exception as exc:
+            if not stop.is_set():
+                asyncio.run_coroutine_threadsafe(
+                    q.put({"t": "err", "msg": str(exc)}), loop
+                )
+        finally:
+            asyncio.run_coroutine_threadsafe(q.put(None), loop)
+            w.stop()
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+    try:
+        while True:
+            try:
+                item = await asyncio.wait_for(q.get(), timeout=120.0)
+            except asyncio.TimeoutError:
+                await websocket.send_json({"t": "ping"})
+                continue
+            if item is None:
+                await websocket.send_json({"t": "done"})
+                break
+            await websocket.send_json(item)
+    except WebSocketDisconnect:
+        pass
+    except Exception as exc:
+        logger.error("WS error: %s", exc)
+    finally:
+        stop.set()
+        logger.info("WS close %s/%s/%s", context, namespace, pod)
+
+
+# ── Static files (frontend) ───────────────────────────────────────────────────
+
+app.mount("/", StaticFiles(directory="static", html=True), name="static")
+
+
+if __name__ == "__main__":
+    if not os.path.exists(KUBECONFIG_PATH):
+        logger.error("kubeconfig not found at: %s", KUBECONFIG_PATH)
+        raise SystemExit(1)
+    logger.info("Starting K8s Log Viewer → http://%s:%d", HOST, PORT)
+    uvicorn.run(app, host=HOST, port=PORT, log_level="warning")

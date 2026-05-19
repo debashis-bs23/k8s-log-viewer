@@ -1,0 +1,22 @@
+# Kubernetes credentials – NEVER commit these
+kubeconfig.yaml
+*.kubeconfig
+kubeconfig
+
+# Environment
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp

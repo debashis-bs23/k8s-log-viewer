@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Horizon k8s log viewer</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- ─── Header ─── -->
+  <header class="topbar">
+    <div class="brand">
+      <span class="k8s-icon">⎈</span>
+      <span>K8s Log Viewer</span>
+    </div>
+    <div class="cluster-picker">
+      <label for="ctx-select">Cluster</label>
+      <select id="ctx-select" onchange="onContextChange()">
+        <option value="">Loading…</option>
+      </select>
+    </div>
+  </header>
+
+  <!-- ─── Body ─── -->
+  <div class="body-grid">
+
+    <!-- Left sidebar -->
+    <aside class="sidebar">
+
+      <!-- Namespace -->
+      <div class="sidebar-sec">
+        <div class="sec-hd">Namespace</div>
+        <select id="ns-select" onchange="onNsChange()" disabled>
+          <option value="">— select cluster —</option>
+        </select>
+      </div>
+
+      <!-- Pods -->
+      <div class="sidebar-sec pods-sec">
+        <div class="sec-hd">
+          Pods
+          <span id="pod-count" class="cnt-badge">0</span>
+          <button class="icon-btn" onclick="refreshPods()" title="Refresh">↺</button>
+        </div>
+        <div id="pod-list" class="pod-list">
+          <div class="empty-msg">Select a namespace</div>
+        </div>
+      </div>
+
+      <!-- Options -->
+      <div class="sidebar-sec opts-sec">
+        <div class="sec-hd">Options</div>
+
+        <div class="field" id="ctr-field" style="display:none">
+          <label>Container</label>
+          <select id="ctr-select"></select>
+        </div>
+
+        <div class="field">
+          <label>Tail lines</label>
+          <select id="tail-select">
+            <option value="50">50</option>
+            <option value="100" selected>100</option>
+            <option value="500">500</option>
+            <option value="1000">1000</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label class="cb-label">
+            <input type="checkbox" id="prev-chk">
+            Previous container
+          </label>
+        </div>
+
+        <div class="btn-stack">
+          <button id="btn-connect" class="btn btn-connect" onclick="startStream()" disabled>
+            ▶ Connect
+          </button>
+          <button id="btn-stop" class="btn btn-stop" onclick="stopStream()" disabled>
+            ■ Stop
+          </button>
+          <button id="btn-dl" class="btn" onclick="downloadLogs()" disabled>
+            ↓ Download
+          </button>
+        </div>
+      </div>
+
+    </aside>
+
+    <!-- Log pane -->
+    <main class="log-pane">
+
+      <div class="log-toolbar">
+        <div class="log-meta">
+          <span id="pod-label" class="pod-label">No pod selected</span>
+          <span id="status-badge" class="status-badge idle">● idle</span>
+        </div>
+        <div class="log-controls">
+          <input id="search-inp" type="text" class="search-inp"
+                 placeholder="Filter logs…" oninput="applyFilter()">
+          <label class="cb-label">
+            <input type="checkbox" id="autoscroll-chk" checked> Auto-scroll
+          </label>
+          <button class="btn sm" onclick="clearLogs()">Clear</button>
+          <span id="line-counter" class="line-counter">0 lines</span>
+        </div>
+      </div>
+
+      <div id="log-output" class="log-output">
+        <div class="welcome">
+          <span class="k8s-icon big">⎈</span>
+          <p>Select a cluster → namespace → pod, then click <strong>Connect</strong>.</p>
+        </div>
+      </div>
+
+    </main>
+  </div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

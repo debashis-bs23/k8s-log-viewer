@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  k8s-log-viewer:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      # Mount the kubeconfig read-only – credentials stay on the host
+      - ./kubeconfig.yaml:/app/kubeconfig.yaml:ro
+    environment:
+      KUBECONFIG_PATH: /app/kubeconfig.yaml
+      HOST: 0.0.0.0
+      PORT: "8080"
+    restart: unless-stopped
