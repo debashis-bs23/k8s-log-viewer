@@ -2,6 +2,7 @@
 kubeconfig.yaml
 *.kubeconfig
 kubeconfig
+kubeconfig.b64.txt
 
 # Environment
 .env

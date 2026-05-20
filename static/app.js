@@ -8,6 +8,7 @@ let ws          = null;
 let allLines    = [];   // every raw line received this session
 let filter      = '';   // current search text
 const MAX_DOM   = 5000; // max <div> lines kept in the DOM
+let authToken   = sessionStorage.getItem('k8s_token') || '';
 
 // ── DOM shortcuts ──────────────────────────────────────────────────────────
 const $    = id => document.getElementById(id);
@@ -134,9 +135,60 @@ function applyFilter() {
   rerender();
 }
 
+// ── Auth ───────────────────────────────────────────────────────────────────
+function initAuth() {
+  if (authToken) {
+    $('login-overlay').classList.add('hidden');
+    loadContexts();
+  }
+  $('login-pass').addEventListener('keydown', e => {
+    if (e.key === 'Enter') doLogin();
+  });
+  $('login-user').addEventListener('keydown', e => {
+    if (e.key === 'Enter') $('login-pass').focus();
+  });
+}
+
+async function doLogin() {
+  const user  = $('login-user').value.trim();
+  const pass  = $('login-pass').value;
+  const errEl = $('login-error');
+  const btn   = $('login-btn');
+  errEl.style.display = 'none';
+  btn.disabled = true;
+  btn.textContent = 'Signing in…';
+  try {
+    const r = await fetch('/api/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: user, password: pass }),
+    });
+    if (!r.ok) throw new Error('Invalid username or password');
+    const { token } = await r.json();
+    authToken = token;
+    sessionStorage.setItem('k8s_token', token);
+    $('login-overlay').classList.add('hidden');
+    loadContexts();
+  } catch (e) {
+    errEl.textContent = e.message;
+    errEl.style.display = 'block';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Sign in';
+  }
+}
+
 // ── API helpers ────────────────────────────────────────────────────────────
 async function apiFetch(path) {
-  const r = await fetch(path);
+  const r = await fetch(path, {
+    headers: { 'Authorization': `Bearer ${authToken}` },
+  });
+  if (r.status === 401) {
+    authToken = '';
+    sessionStorage.removeItem('k8s_token');
+    $('login-overlay').classList.remove('hidden');
+    throw new Error('Session expired – please log in again');
+  }
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }
@@ -312,6 +364,7 @@ function startStream() {
   // Always send container – required for multi-container pods
   const ctr = $('ctr-select').value;
   if (ctr) params.append('container', ctr);
+  params.append('token', authToken);
 
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   ws = new WebSocket(`${proto}//${location.host}/ws/logs?${params}`);
@@ -371,8 +424,9 @@ function downloadLogs() {
   const ctr = $('ctr-select').value;
   if (ctr) params.append('container', ctr);
   if ($('prev-chk').checked) params.append('previous', 'true');
+  params.append('token', authToken);
   window.open(`/api/logs/download?${params}`, '_blank');
 }
 
 // ── Init ───────────────────────────────────────────────────────────────────
-loadContexts();
+initAuth();

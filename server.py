@@ -12,20 +12,24 @@ Exposes:
 
 import asyncio
 import base64
+import hashlib
+import hmac
 import logging
 import os
+import secrets
 import sys
 import tempfile
 import threading
 from typing import Optional
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 from kubernetes import client, config, watch
 from kubernetes.client.rest import ApiException
+from pydantic import BaseModel
 
 try:
     from dotenv import load_dotenv
@@ -64,6 +68,36 @@ HOST = os.environ.get("HOST", "0.0.0.0")
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else int(os.environ.get("PORT", "8080"))
 
 
+# ── Auth ──────────────────────────────────────────────────────────────────────
+
+APP_USERNAME = os.environ.get("APP_USERNAME", "horizon")
+APP_PASSWORD = os.environ.get("APP_PASSWORD", "Hzn@K8s!2025#Lx7")
+_TOKEN = hmac.new(
+    APP_PASSWORD.encode(),
+    APP_USERNAME.encode(),
+    hashlib.sha256,
+).hexdigest()
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+def _verify(
+    authorization: Optional[str] = Header(None),
+    token: Optional[str] = Query(None),
+) -> None:
+    """Accept Bearer token in Authorization header or ?token= query param."""
+    t = None
+    if authorization and authorization.lower().startswith("bearer "):
+        t = authorization[7:]
+    elif token:
+        t = token
+    if not t or not secrets.compare_digest(t, _TOKEN):
+        raise HTTPException(401, "Unauthorized")
+
+
 # ── Kubernetes helpers ────────────────────────────────────────────────────────
 
 def make_v1(context: str) -> client.CoreV1Api:
@@ -99,8 +133,16 @@ def health():
     return {"ok": True}
 
 
+@app.post("/api/login")
+def login(req: LoginRequest):
+    if secrets.compare_digest(req.username, APP_USERNAME) and \
+       secrets.compare_digest(req.password, APP_PASSWORD):
+        return {"token": _TOKEN}
+    raise HTTPException(401, "Invalid username or password")
+
+
 @app.get("/api/contexts")
-def list_contexts():
+def list_contexts(_: None = Depends(_verify)):
     try:
         ctxs, active = config.list_kube_config_contexts(config_file=KUBECONFIG_PATH)
         return {
@@ -112,7 +154,7 @@ def list_contexts():
 
 
 @app.get("/api/namespaces")
-def list_namespaces(context: str = Query(...)):
+def list_namespaces(context: str = Query(...), _: None = Depends(_verify)):
     v1 = make_v1(context)
     try:
         items = v1.list_namespace().items
@@ -122,7 +164,7 @@ def list_namespaces(context: str = Query(...)):
 
 
 @app.get("/api/pods")
-def list_pods(context: str = Query(...), namespace: str = Query(...)):
+def list_pods(context: str = Query(...), namespace: str = Query(...), _: None = Depends(_verify)):
     v1 = make_v1(context)
     try:
         raw = v1.list_namespaced_pod(namespace=namespace).items
@@ -153,6 +195,7 @@ def download_logs(
     container: Optional[str] = Query(None),
     tail_lines: Optional[int] = Query(5000),
     previous: bool = Query(False),
+    _: None = Depends(_verify),
 ):
     v1 = make_v1(context)
     kw: dict = {"name": pod, "namespace": namespace, "previous": previous}
@@ -184,6 +227,7 @@ async def ws_logs(
     container: Optional[str] = None,
     tail_lines: int = 100,
     previous: bool = False,
+    _: None = Depends(_verify),
 ):
     """Stream pod logs as JSON messages:
       {"t": "log",  "line": "..."}

@@ -9,6 +9,26 @@
 <body>
 <div id="app">
 
+  <!-- ─── Login overlay ─── -->
+  <div id="login-overlay" class="login-overlay">
+    <div class="login-card">
+      <div class="login-brand">
+        <span class="k8s-icon">⎈</span>
+        <span>Horizon K8s Log Viewer</span>
+      </div>
+      <div id="login-error" class="login-error" style="display:none"></div>
+      <div class="field">
+        <label>Username</label>
+        <input type="text" id="login-user" autocomplete="username" placeholder="Username">
+      </div>
+      <div class="field">
+        <label>Password</label>
+        <input type="password" id="login-pass" autocomplete="current-password" placeholder="Password">
+      </div>
+      <button class="btn btn-connect" id="login-btn" onclick="doLogin()">Sign in</button>
+    </div>
+  </div>
+
   <!-- ─── Header ─── -->
   <header class="topbar">
     <div class="brand">
