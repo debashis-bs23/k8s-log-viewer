@@ -11,9 +11,11 @@ Exposes:
 """
 
 import asyncio
+import base64
 import logging
 import os
 import sys
+import tempfile
 import threading
 from typing import Optional
 
@@ -37,7 +39,27 @@ logging.basicConfig(
 )
 logger = logging.getLogger("k8s-log-viewer")
 
-KUBECONFIG_PATH = os.environ.get("KUBECONFIG_PATH", "./kubeconfig.yaml")
+def _resolve_kubeconfig() -> str:
+    """Return a path to a valid kubeconfig file.
+
+    Priority:
+      1. KUBECONFIG_B64 env var  – base64-encoded kubeconfig content
+         (use this on hosted platforms where you can't commit the file)
+      2. KUBECONFIG_PATH env var – explicit file path
+      3. ./kubeconfig.yaml       – local default
+    """
+    b64 = os.environ.get("KUBECONFIG_B64", "").strip()
+    if b64:
+        content = base64.b64decode(b64)
+        tmp = tempfile.NamedTemporaryFile(suffix=".yaml", delete=False)
+        tmp.write(content)
+        tmp.close()
+        logger.info("kubeconfig loaded from KUBECONFIG_B64 env var → %s", tmp.name)
+        return tmp.name
+    return os.environ.get("KUBECONFIG_PATH", "./kubeconfig.yaml")
+
+
+KUBECONFIG_PATH = _resolve_kubeconfig()
 HOST = os.environ.get("HOST", "0.0.0.0")
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else int(os.environ.get("PORT", "8080"))
 
@@ -237,8 +259,13 @@ app.mount("/", StaticFiles(directory="static", html=True), name="static")
 
 
 if __name__ == "__main__":
-    if not os.path.exists(KUBECONFIG_PATH):
-        logger.error("kubeconfig not found at: %s", KUBECONFIG_PATH)
-        raise SystemExit(1)
+    if os.path.exists(KUBECONFIG_PATH):
+        logger.info("kubeconfig OK → %s", KUBECONFIG_PATH)
+    else:
+        logger.warning(
+            "kubeconfig not found at '%s'. "
+            "Set KUBECONFIG_B64 env var (base64 of kubeconfig.yaml) or KUBECONFIG_PATH.",
+            KUBECONFIG_PATH,
+        )
     logger.info("Starting K8s Log Viewer → http://%s:%d", HOST, PORT)
     uvicorn.run(app, host=HOST, port=PORT, log_level="warning")
