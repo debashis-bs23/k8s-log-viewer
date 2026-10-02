@@ -429,3 +429,48 @@ mark.hl {
   white-space: nowrap;
   flex-shrink: 0;
 }
+
+/* ── Saved Logs panel ── */
+.saved-logs-sec {
+  flex-shrink: 0;
+  max-height: 200px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.saved-logs-list {
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--bg3) transparent;
+  flex: 1;
+}
+
+.saved-log-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 4px;
+  border-radius: 4px;
+}
+.saved-log-item:hover { background: var(--bg2); }
+
+.sl-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.sl-name {
+  font-size: 11px;
+  color: var(--tx1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sl-meta {
+  font-size: 10px;
+  color: var(--tx2);
+}

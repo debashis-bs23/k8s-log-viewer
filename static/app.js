@@ -71,6 +71,7 @@ function setStatus(s) {
   const live = s === 'streaming';
   $('btn-connect').disabled = live || s === 'connecting';
   $('btn-stop').disabled    = !live;
+  if (s === 'done' || s === 'stopped' || s === 'error') loadSavedLogs();
 }
 
 // ── Line counter ───────────────────────────────────────────────────────────
@@ -140,6 +141,7 @@ function initAuth() {
   if (authToken) {
     $('login-overlay').classList.add('hidden');
     loadContexts();
+    loadSavedLogs();
   }
   $('login-pass').addEventListener('keydown', e => {
     if (e.key === 'Enter') doLogin();
@@ -169,6 +171,7 @@ async function doLogin() {
     sessionStorage.setItem('k8s_token', token);
     $('login-overlay').classList.add('hidden');
     loadContexts();
+    loadSavedLogs();
   } catch (e) {
     errEl.textContent = e.message;
     errEl.style.display = 'block';
@@ -446,6 +449,49 @@ function startStream() {
 function stopStream() {
   if (ws) { ws.close(); ws = null; }
   setStatus('stopped');
+}
+
+// ── Saved logs ─────────────────────────────────────────────────────────────
+function formatBytes(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1_048_576) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1_048_576).toFixed(1)} MB`;
+}
+
+async function loadSavedLogs() {
+  const list = $('saved-logs-list');
+  list.innerHTML = '<div class="empty-msg">Loading…</div>';
+  try {
+    const { files } = await apiFetch('/api/saved-logs');
+    if (!files.length) {
+      list.innerHTML = '<div class="empty-msg">No saved logs</div>';
+      return;
+    }
+    const frag = document.createDocumentFragment();
+    for (const f of files) {
+      const el = document.createElement('div');
+      el.className = 'saved-log-item';
+      const date = f.modified.replace('T', ' ');
+      el.innerHTML = `
+        <div class="sl-info">
+          <span class="sl-name" title="${esc(f.name)}">${esc(f.name)}</span>
+          <span class="sl-meta">${formatBytes(f.size_bytes)} · ${date}</span>
+        </div>
+        <button class="icon-btn" onclick="downloadSavedLog('${esc(f.name)}')" title="Download">↓</button>`;
+      frag.appendChild(el);
+    }
+    list.innerHTML = '';
+    list.appendChild(frag);
+  } catch (e) {
+    list.innerHTML = `<div class="empty-msg" style="color:var(--red)">Error: ${e.message}</div>`;
+  }
+}
+
+function refreshSavedLogs() { loadSavedLogs(); }
+
+function downloadSavedLog(name) {
+  const params = new URLSearchParams({ file: name, token: authToken });
+  window.open(`/api/saved-logs/download?${params}`, '_blank');
 }
 
 // ── Download ───────────────────────────────────────────────────────────────
