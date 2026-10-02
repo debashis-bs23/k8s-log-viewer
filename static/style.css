@@ -402,3 +402,30 @@ mark.hl {
   padding: 7px 10px;
   font-size: 12px;
 }
+
+/* ── JAR date ── */
+.pod-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.pod-info .pod-name {
+  flex: unset;
+}
+
+.jar-date {
+  font-size: 10px;
+  color: var(--tx2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.jar-label {
+  font-size: 11px;
+  color: var(--tx2);
+  white-space: nowrap;
+  flex-shrink: 0;
+}

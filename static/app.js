@@ -285,7 +285,10 @@ function renderPods(pods) {
     el.dataset.pod = pod.name;
     el.innerHTML  = `
       <div class="pod-dot ${dotCls}"></div>
-      <div class="pod-name" title="${esc(pod.name)}">${esc(pod.name)}</div>
+      <div class="pod-info">
+        <div class="pod-name" title="${esc(pod.name)}">${esc(pod.name)}</div>
+        <span class="jar-date"></span>
+      </div>
       <div class="pod-meta">${esc(pod.ready)}${restartHtml}</div>`;
     el.onclick = () => selectPod(pod);
     frag.appendChild(el);
@@ -332,6 +335,38 @@ function selectPod(pod) {
 
   $('btn-connect').disabled = false;
   $('btn-dl').disabled      = false;
+
+  fetchJarDate(pod);
+}
+
+async function fetchJarDate(pod) {
+  const jarLabel = $('jar-label');
+  jarLabel.textContent = '';
+
+  const podCard = $('pod-list').querySelector(`[data-pod="${CSS.escape(pod.name)}"]`);
+  const jarSpan = podCard ? podCard.querySelector('.jar-date') : null;
+  if (jarSpan) jarSpan.textContent = '⟳';
+
+  try {
+    const params = new URLSearchParams({
+      context:   selectedCtx,
+      namespace: selectedNs,
+      pod:       pod.name,
+      container: $('ctr-select').value,
+    });
+    const data = await apiFetch(`/api/jar-date?${params}`);
+    if (data.date) {
+      if (jarSpan) jarSpan.textContent = `JAR ${data.date}`;
+      const sizePart = data.size_bytes
+        ? ` (${(data.size_bytes / 1_048_576).toFixed(1)} MB)`
+        : '';
+      jarLabel.textContent = `JAR built: ${data.date}${sizePart}`;
+    } else {
+      if (jarSpan) jarSpan.textContent = '';
+    }
+  } catch {
+    if (jarSpan) jarSpan.textContent = '';
+  }
 }
 
 function resetPodPanel() {
@@ -339,6 +374,7 @@ function resetPodPanel() {
   $('pod-list').innerHTML = '<div class="empty-msg">Select a namespace</div>';
   $('pod-count').textContent = '0';
   $('pod-label').textContent = 'No pod selected';
+  $('jar-label').textContent = '';
   $('btn-connect').disabled = true;
   $('btn-stop').disabled    = true;
   $('btn-dl').disabled      = true;
