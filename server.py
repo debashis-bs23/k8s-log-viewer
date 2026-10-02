@@ -29,6 +29,7 @@ from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 from kubernetes import client, config, watch
 from kubernetes.client.rest import ApiException
+from kubernetes.stream import stream as kube_stream
 from pydantic import BaseModel
 
 try:
@@ -65,7 +66,10 @@ def _resolve_kubeconfig() -> str:
 
 KUBECONFIG_PATH = _resolve_kubeconfig()
 HOST = os.environ.get("HOST", "0.0.0.0")
-PORT = int(sys.argv[1]) if len(sys.argv) > 1 else int(os.environ.get("PORT", "8080"))
+try:
+    PORT = int(sys.argv[1])
+except (IndexError, ValueError):
+    PORT = int(os.environ.get("PORT", "8080"))
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
@@ -185,6 +189,45 @@ def list_pods(context: str = Query(...), namespace: str = Query(...), _: None = 
             "init_containers": [c.name for c in (p.spec.init_containers or [])],
         })
     return {"pods": sorted(pods, key=lambda x: x["name"])}
+
+
+@app.get("/api/jar-date")
+def get_jar_date(
+    context: str = Query(...),
+    namespace: str = Query(...),
+    pod: str = Query(...),
+    container: str = Query(...),
+    _: None = Depends(_verify),
+):
+    v1 = make_v1(context)
+    try:
+        resp = kube_stream(
+            v1.connect_get_namespaced_pod_exec,
+            pod,
+            namespace,
+            command=["ls", "-la", "/app/app.jar"],
+            container=container,
+            stderr=True,
+            stdin=False,
+            stdout=True,
+            tty=False,
+        )
+        line = (resp or "").strip()
+        if not line or "No such file" in line:
+            return {"date": None, "error": "not found"}
+        parts = line.split()
+        if len(parts) < 9:
+            return {"date": None, "error": "unexpected output"}
+        try:
+            size_bytes = int(parts[4])
+        except ValueError:
+            return {"date": None, "error": "unexpected output"}
+        date_str = f"{parts[5]} {parts[6]} {parts[7]}"
+        return {"date": date_str, "size_bytes": size_bytes}
+    except ApiException as exc:
+        return {"date": None, "error": f"[K8s {exc.status}] {exc.reason}"}
+    except Exception as exc:
+        return {"date": None, "error": str(exc)}
 
 
 @app.get("/api/logs/download")
