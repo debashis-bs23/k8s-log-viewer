@@ -12,6 +12,7 @@ Exposes:
 
 import asyncio
 import base64
+from datetime import datetime, timezone
 import hashlib
 import hmac
 import logging
@@ -70,6 +71,23 @@ try:
     PORT = int(sys.argv[1])
 except (IndexError, ValueError):
     PORT = int(os.environ.get("PORT", "8080"))
+
+LOGS_DIR = os.environ.get("LOGS_DIR", "./logs")
+os.makedirs(LOGS_DIR, exist_ok=True)
+
+
+def _save_logs(namespace: str, pod_name: str, container: str, lines: list) -> None:
+    if not lines:
+        return
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%S")
+    fname = f"{namespace}__{pod_name}__{container}__{ts}.log"
+    path = os.path.join(LOGS_DIR, fname)
+    try:
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(lines))
+        logger.info("Saved %d lines → %s", len(lines), path)
+    except Exception as exc:
+        logger.error("Failed to save logs: %s", exc)
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
@@ -259,6 +277,44 @@ def download_logs(
     )
 
 
+@app.get("/api/saved-logs")
+def list_saved_logs(_: None = Depends(_verify)):
+    files = []
+    try:
+        for fname in os.listdir(LOGS_DIR):
+            fpath = os.path.join(LOGS_DIR, fname)
+            if not os.path.isfile(fpath):
+                continue
+            stat = os.stat(fpath)
+            mtime = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).strftime(
+                "%Y-%m-%dT%H:%M:%S"
+            )
+            files.append({"name": fname, "size_bytes": stat.st_size, "modified": mtime})
+    except Exception as exc:
+        raise HTTPException(500, str(exc)) from exc
+    files.sort(key=lambda x: x["modified"], reverse=True)
+    return {"files": files}
+
+
+@app.get("/api/saved-logs/download")
+def download_saved_log(file: str = Query(...), _: None = Depends(_verify)):
+    if os.path.basename(file) != file or ".." in file:
+        raise HTTPException(400, "Invalid filename")
+    path = os.path.join(LOGS_DIR, file)
+    if not os.path.isfile(path):
+        raise HTTPException(404, "File not found")
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            content = fh.read()
+    except Exception as exc:
+        raise HTTPException(500, str(exc)) from exc
+    return Response(
+        content=content,
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{file}"'},
+    )
+
+
 # ── WebSocket log streaming ───────────────────────────────────────────────────
 
 @app.websocket("/ws/logs")
@@ -284,6 +340,7 @@ async def ws_logs(
     loop = asyncio.get_event_loop()
     q: asyncio.Queue = asyncio.Queue(maxsize=20_000)
     stop = threading.Event()
+    captured: list = []
 
     def _worker():
         v1 = make_v1(context)
@@ -302,6 +359,7 @@ async def ws_logs(
                 if stop.is_set():
                     w.stop()
                     return
+                captured.append(line)
                 asyncio.run_coroutine_threadsafe(
                     q.put({"t": "log", "line": line}), loop
                 ).result(timeout=10)
@@ -317,6 +375,7 @@ async def ws_logs(
         finally:
             asyncio.run_coroutine_threadsafe(q.put(None), loop)
             w.stop()
+            _save_logs(namespace, pod, container or "default", captured)
 
     threading.Thread(target=_worker, daemon=True).start()
 
